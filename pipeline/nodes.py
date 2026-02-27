@@ -240,24 +240,36 @@ def format_response(state: VisionState) -> Dict[str, Any]:
 
 
 def node_yolo_compare(state: VisionState) -> Dict[str, Any]:
-    """Runs YOLOv26 inference on the same image for comparison."""
+    """Runs YOLOE-26 open-vocabulary inference on the same image for comparison."""
     try:
         from ultralytics import YOLO
     except ImportError:
-        log.error("[YOLO] ultralytics not installed. Install via: pip install ultralytics")
-        return {"messages": [AIMessage(content="YOLOv26 comparison skipped (ultralytics not installed).")]}
+        log.error("[YOLOE] ultralytics not installed. Install via: pip install ultralytics")
+        return {"messages": [AIMessage(content="YOLOE-26 comparison skipped (ultralytics not installed).")]}
 
     image_path = state.get("image_path")
+    prompt = state.get("prompt")
+    
     if not image_path or not os.path.exists(image_path):
-        return {"messages": [AIMessage(content="YOLOv26 comparison skipped (image path missing).")]}
+        return {"messages": [AIMessage(content="YOLOE-26 comparison skipped (image path missing).")]}
+    
+    if not prompt:
+        return {"messages": [AIMessage(content="YOLOE-26 comparison skipped (no text prompt provided).")]}
 
     try:
-        # Load YOLOv26 model (change to yolo26n.pt, yolo26s.pt, etc. as per your needs)
-        model = YOLO("yolo11n.pt")  # Using YOLO11 as YOLOv26 might not be released yet
+        # Load YOLOE-26 open-vocabulary segmentation model
+        model = YOLO("yoloe-26l-seg.pt")
+        
+        # Parse prompt: convert "person . animal . car" -> ["person", "animal", "car"]
+        classes = [cls.strip() for cls in prompt.split(".") if cls.strip()]
+        
+        # Set text prompts for YOLOE-26
+        model.set_classes(classes)
+        log.info(f"[YOLOE] Set text prompts: {classes}")
         
         start_time = time.time()
-        results = model(image_path, verbose=False)
-        yolo_time = time.time() - start_time
+        results = model.predict(image_path, verbose=False)
+        yoloe_time = time.time() - start_time
         
         # Draw results on image
         img = cv2.imread(image_path)
@@ -267,13 +279,18 @@ def node_yolo_compare(state: VisionState) -> Dict[str, Any]:
         num_detections = len(detections)
         
         np.random.seed(123)
+        colors_yoloe = {}
+        
         for box in detections:
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
             conf = float(box.conf[0])
             cls = int(box.cls[0])
-            label = model.names[cls]
+            label = classes[cls] if cls < len(classes) else f"class_{cls}"
             
-            color = [int(c) for c in np.random.randint(0, 255, 3)]
+            if label not in colors_yoloe:
+                colors_yoloe[label] = [int(c) for c in np.random.randint(0, 255, 3)]
+            color = colors_yoloe[label]
+            
             thickness = max(2, int(min(h, w) * 0.005))
             cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
             
@@ -285,20 +302,20 @@ def node_yolo_compare(state: VisionState) -> Dict[str, Any]:
             cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thick)
         
         # Write inference time on image
-        time_text = f"YOLO11: {yolo_time:.3f}s"
+        time_text = f"YOLOE-26: {yoloe_time:.3f}s"
         cv2.putText(img, time_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         
-        output_path = os.path.join(tempfile.gettempdir(), f"yolo_result_{uuid.uuid4().hex[:8]}.jpg")
+        output_path = os.path.join(tempfile.gettempdir(), f"yoloe_result_{uuid.uuid4().hex[:8]}.jpg")
         cv2.imwrite(output_path, img)
-        log.info(f"[YOLO] Saved result to {output_path}")
+        log.info(f"[YOLOE] Saved result to {output_path}")
         
         _, buffer = cv2.imencode('.jpg', img)
         img_b64 = base64.b64encode(buffer).decode('utf-8')
         img_url = f"data:image/jpeg;base64,{img_b64}"
         
-        text_response = f"\n\n**YOLO11 Comparison**\n\n"
-        text_response += f"Total inference time: **{yolo_time:.3f}s**\n\n"
-        text_response += f"Detected {num_detections} objects using COCO classes.\n"
+        text_response = f"\n\n**YOLOE-26 Open-Vocabulary Comparison**\n\n"
+        text_response += f"Total inference time: **{yoloe_time:.3f}s**\n\n"
+        text_response += f"Detected {num_detections} objects using text prompts: {', '.join(classes)}.\n"
         
         message = AIMessage(
             content=[
@@ -310,5 +327,5 @@ def node_yolo_compare(state: VisionState) -> Dict[str, Any]:
         return {"messages": [message]}
         
     except Exception as e:
-        log.error(f"[YOLO] Error during inference: {e}")
-        return {"messages": [AIMessage(content=f"YOLOv26 comparison failed: {str(e)}")]}
+        log.error(f"[YOLOE] Error during inference: {e}")
+        return {"messages": [AIMessage(content=f"YOLOE-26 comparison failed: {str(e)}")]}
