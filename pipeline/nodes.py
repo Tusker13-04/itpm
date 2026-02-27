@@ -5,7 +5,6 @@ import base64
 import os
 import tempfile
 import uuid
-import json
 from typing import Dict, Any
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -29,43 +28,43 @@ def process_message(state: VisionState) -> Dict[str, Any]:
     
     if isinstance(last_message, HumanMessage):
         content = last_message.content
-        
-        # Log the exact payload structure to see what LangGraph Studio is actually sending
-        try:
-            log.info("[CHAT DEBUG] Message content type: %s", type(content))
-            log.info("[CHAT DEBUG] Message content: %s", str(content)[:500] + "..." if len(str(content)) > 500 else str(content))
-        except Exception:
-            pass
 
-        # Multimodal inputs from LangGraph Studio UI are usually represented as lists
+        # Multimodal inputs from LangGraph Studio UI are represented as lists
         if isinstance(content, list):
             text_parts = []
             for block in content:
-                # If block is a dict, it might have type 'text' or 'image_url'
                 if isinstance(block, dict):
                     # Text blocks
                     if block.get("type") == "text":
                         text_parts.append(block["text"])
                     
-                    # Image URL blocks (Base64)
+                    # LangGraph Studio UI raw image block format: {'type': 'image', 'data': '/9j/4AAQ...'}
+                    elif block.get("type") == "image":
+                        b64_data = block.get("data", "")
+                        if b64_data:
+                            try:
+                                # Create a temporary file with a unique name
+                                temp_dir = tempfile.gettempdir()
+                                # Default to .jpg for base64 blocks unless headers indicate otherwise
+                                temp_path = os.path.join(temp_dir, f"lg_upload_{uuid.uuid4().hex[:8]}.jpg")
+                                
+                                with open(temp_path, "wb") as f:
+                                    f.write(base64.b64decode(b64_data))
+                                    
+                                result_state["image_path"] = temp_path
+                                log.info("[CHAT] Saved uploaded image to %s", temp_path)
+                            except Exception as e:
+                                log.error("Failed to decode image from UI (type: image): %s", e)
+
+                    # Standard LangChain image URL block: {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,...'}}
                     elif block.get("type") == "image_url":
-                        # LangChain standard format: {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
-                        # Sometimes UI sends: {"type": "image_url", "url": "data:..."} or similar variations
-                        
                         image_data = block.get("image_url", {})
-                        if isinstance(image_data, str):
-                            image_url = image_data
-                        elif isinstance(image_data, dict):
-                            image_url = image_data.get("url", "")
-                        else:
-                            image_url = block.get("url", "")
+                        image_url = image_data if isinstance(image_data, str) else image_data.get("url", "")
 
                         if image_url.startswith("data:image"):
                             try:
-                                # Parse out the base64 string
                                 header, b64_data = image_url.split(",", 1)
                                 
-                                # Create a temporary file with a unique name
                                 temp_dir = tempfile.gettempdir()
                                 file_ext = ".png" if "png" in header.lower() else ".jpg"
                                 temp_path = os.path.join(temp_dir, f"lg_upload_{uuid.uuid4().hex[:8]}{file_ext}")
@@ -74,13 +73,10 @@ def process_message(state: VisionState) -> Dict[str, Any]:
                                     f.write(base64.b64decode(b64_data))
                                     
                                 result_state["image_path"] = temp_path
-                                log.info("[CHAT] Saved uploaded image to %s", temp_path)
+                                log.info("[CHAT] Saved uploaded image URL to %s", temp_path)
                             except Exception as e:
-                                log.error("Failed to decode image from UI: %s", e)
-                        else:
-                            log.warning("Image URL did not start with 'data:image', was: %s", image_url[:50])
-                            
-                # Fallback: if block is just a string
+                                log.error("Failed to decode image from UI (type: image_url): %s", e)
+                                
                 elif isinstance(block, str):
                     text_parts.append(block)
                     
@@ -111,7 +107,7 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
     log.info("[GDINO] image_path='%s', prompt='%s'", image_path, prompt)
     
     if not image_path:
-        return {"error": "Please provide an image. You can click the '+' icon in the chat to upload one. (Check console logs for debug info)", "boxes": []}
+        return {"error": "Please provide an image. You can click the '+' icon in the chat to upload one.", "boxes": []}
     if not prompt:
         return {"error": "Please provide a text prompt to search for.", "boxes": []}
 
