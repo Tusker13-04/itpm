@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage
 
 class VisionState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], add_messages]
+    # Keep image_path but note it can be provided via state or parsed from chat
     image_path: Optional[str]
     prompt: Optional[str]
     boxes: Optional[List[List[float]]]
