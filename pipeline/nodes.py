@@ -22,17 +22,31 @@ def process_message(state: VisionState) -> Dict[str, Any]:
     last_message = messages[-1]
     if isinstance(last_message, HumanMessage):
         content = last_message.content
-        log.info("[CHAT] Extracted raw message: '%s'", content)
+        
+        # Handle cases where the UI passes content as a list (e.g. multimodal inputs)
+        if isinstance(content, list):
+            # Try to extract text from the list of content blocks
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and "text" in block:
+                    text_parts.append(block["text"])
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            content_str = " ".join(text_parts) if text_parts else str(content)
+        else:
+            content_str = str(content)
+            
+        log.info("[CHAT] Extracted string message: '%s'", content_str)
         
         # Simple parsing logic to allow users to provide path in chat
         # Example format: "[C:/path/to/image.jpg] person . car"
-        if content.startswith("[") and "]" in content:
-            path_end = content.find("]")
-            img_path = content[1:path_end].strip()
-            prompt_text = content[path_end+1:].strip()
+        if content_str.startswith("[") and "]" in content_str:
+            path_end = content_str.find("]")
+            img_path = content_str[1:path_end].strip()
+            prompt_text = content_str[path_end+1:].strip()
             return {"image_path": img_path, "prompt": prompt_text}
             
-        return {"prompt": content}
+        return {"prompt": content_str}
     return {}
 
 
