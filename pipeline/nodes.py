@@ -4,6 +4,7 @@ import logging
 import base64
 import os
 import tempfile
+import uuid
 from typing import Dict, Any
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -28,26 +29,27 @@ def process_message(state: VisionState) -> Dict[str, Any]:
     if isinstance(last_message, HumanMessage):
         content = last_message.content
         
-        # Handle multimodal inputs from LangGraph Studio UI (lists)
+        # Multimodal inputs from LangGraph Studio UI are represented as lists
         if isinstance(content, list):
             text_parts = []
             for block in content:
-                # 1. Extract Text
-                if block.get("type") == "text":
+                # Type 1: Text blocks
+                if isinstance(block, dict) and block.get("type") == "text":
                     text_parts.append(block["text"])
                     
-                # 2. Extract Image uploaded directly via UI
-                elif block.get("type") == "image_url":
-                    # The image_url format looks like: "data:image/jpeg;base64,/9j/4AAQSkZ..."
+                # Type 2: Image URL blocks (Base64)
+                elif isinstance(block, dict) and block.get("type") == "image_url":
                     image_url = block.get("image_url", {}).get("url", "")
                     if image_url.startswith("data:image"):
                         try:
                             # Parse out the base64 string
                             header, b64_data = image_url.split(",", 1)
-                            # Create a temporary file to store the image
-                            # GroundingDino needs a file path
+                            
+                            # Create a temporary file with a unique name
+                            # Use uuid to prevent overwriting between runs
                             temp_dir = tempfile.gettempdir()
-                            temp_path = os.path.join(temp_dir, "lg_studio_upload.jpg")
+                            file_ext = ".png" if "png" in header.lower() else ".jpg"
+                            temp_path = os.path.join(temp_dir, f"lg_upload_{uuid.uuid4().hex[:8]}{file_ext}")
                             
                             with open(temp_path, "wb") as f:
                                 f.write(base64.b64decode(b64_data))
@@ -57,6 +59,10 @@ def process_message(state: VisionState) -> Dict[str, Any]:
                         except Exception as e:
                             log.error("Failed to decode image from UI: %s", e)
                             
+                # Fallback: if block is just a string
+                elif isinstance(block, str):
+                    text_parts.append(block)
+                    
             content_str = " ".join(text_parts).strip()
         else:
             content_str = str(content)
