@@ -5,7 +5,12 @@ import base64
 import os
 import tempfile
 import uuid
+import json
+import random
 from typing import Dict, Any
+
+import cv2
+import numpy as np
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -38,44 +43,34 @@ def process_message(state: VisionState) -> Dict[str, Any]:
                     if block.get("type") == "text":
                         text_parts.append(block["text"])
                     
-                    # LangGraph Studio UI raw image block format: {'type': 'image', 'data': '/9j/4AAQ...'}
+                    # LangGraph Studio UI raw image block format
                     elif block.get("type") == "image":
                         b64_data = block.get("data", "")
                         if b64_data:
                             try:
-                                # Create a temporary file with a unique name
                                 temp_dir = tempfile.gettempdir()
-                                # Default to .jpg for base64 blocks unless headers indicate otherwise
                                 temp_path = os.path.join(temp_dir, f"lg_upload_{uuid.uuid4().hex[:8]}.jpg")
-                                
                                 with open(temp_path, "wb") as f:
                                     f.write(base64.b64decode(b64_data))
-                                    
                                 result_state["image_path"] = temp_path
-                                log.info("[CHAT] Saved uploaded image to %s", temp_path)
                             except Exception as e:
-                                log.error("Failed to decode image from UI (type: image): %s", e)
+                                log.error("Failed to decode image from UI: %s", e)
 
-                    # Standard LangChain image URL block: {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,...'}}
+                    # Standard LangChain image URL block
                     elif block.get("type") == "image_url":
                         image_data = block.get("image_url", {})
                         image_url = image_data if isinstance(image_data, str) else image_data.get("url", "")
-
                         if image_url.startswith("data:image"):
                             try:
                                 header, b64_data = image_url.split(",", 1)
-                                
                                 temp_dir = tempfile.gettempdir()
                                 file_ext = ".png" if "png" in header.lower() else ".jpg"
                                 temp_path = os.path.join(temp_dir, f"lg_upload_{uuid.uuid4().hex[:8]}{file_ext}")
-                                
                                 with open(temp_path, "wb") as f:
                                     f.write(base64.b64decode(b64_data))
-                                    
                                 result_state["image_path"] = temp_path
-                                log.info("[CHAT] Saved uploaded image URL to %s", temp_path)
                             except Exception as e:
-                                log.error("Failed to decode image from UI (type: image_url): %s", e)
+                                log.error("Failed to decode image_url from UI: %s", e)
                                 
                 elif isinstance(block, str):
                     text_parts.append(block)
@@ -84,8 +79,6 @@ def process_message(state: VisionState) -> Dict[str, Any]:
         else:
             content_str = str(content)
             
-        log.info("[CHAT] Extracted string message: '%s'", content_str)
-        
         # Fallback manual path parsing if user typed [path] instead of uploading
         if content_str.startswith("[") and "]" in content_str:
             path_end = content_str.find("]")
@@ -104,8 +97,6 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
     image_path = state.get("image_path")
     prompt = state.get("prompt")
     
-    log.info("[GDINO] image_path='%s', prompt='%s'", image_path, prompt)
-    
     if not image_path:
         return {"error": "Please provide an image. You can click the '+' icon in the chat to upload one.", "boxes": []}
     if not prompt:
@@ -120,15 +111,7 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
         )
 
         if not result["boxes"]:
-            log.warning("[GDINO] No detections")
-            return {
-                "boxes": [],
-                "phrases": [],
-                "logits": [],
-                "error": "no_detections",
-            }
-
-        log.info("[GDINO] %d objects: %s", len(result["boxes"]), result["phrases"])
+            return {"boxes": [], "phrases": [], "logits": [], "error": "no_detections"}
 
         return {
             "boxes": result["boxes"],
@@ -143,9 +126,6 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
 
 def node_sam2(state: VisionState) -> Dict[str, Any]:
     """Node wrapper around the SAM2 segmentation tool."""
-    num_boxes = len(state.get("boxes") or [])
-    log.info("[SAM2] %d boxes", num_boxes)
-
     try:
         result = run_sam2.invoke(
             {
@@ -153,8 +133,6 @@ def node_sam2(state: VisionState) -> Dict[str, Any]:
                 "boxes": state["boxes"],
             }
         )
-
-        log.info("[SAM2] %d masks generated", len(result["masks"]))
         return {"masks": result["masks"]}
     except Exception as e:
         log.error("[SAM2] %s", e)
@@ -163,9 +141,6 @@ def node_sam2(state: VisionState) -> Dict[str, Any]:
 
 def node_clip(state: VisionState) -> Dict[str, Any]:
     """Node wrapper around CLIP re-ranking."""
-    num_boxes = len(state.get("boxes") or [])
-    log.info("[CLIP] scoring %d regions", num_boxes)
-
     try:
         result = run_clip_rerank.invoke(
             {
@@ -174,8 +149,6 @@ def node_clip(state: VisionState) -> Dict[str, Any]:
                 "phrases": state["phrases"],
             }
         )
-
-        log.info("[CLIP] scores=%s", result["clip_scores"])
         return {"clip_scores": result["clip_scores"]}
     except Exception as e:
         log.error("[CLIP] %s", e)
@@ -186,8 +159,6 @@ def node_filter(state: VisionState) -> Dict[str, Any]:
     """
     Filters detections using CLIP scores and packs final results.
     """
-    log.info("[FILTER] threshold=%.3f", CLIP_THRESHOLD)
-
     boxes = state.get("boxes") or []
     phrases = state.get("phrases") or []
     masks = state.get("masks") or []
@@ -196,7 +167,7 @@ def node_filter(state: VisionState) -> Dict[str, Any]:
     final = [
         {
             "label": phrase,
-            "box": box,
+            "box": box, # Note: These are [cx, cy, w, h] normalized
             "mask": mask,
             "score": round(float(score), 4),
         }
@@ -204,12 +175,54 @@ def node_filter(state: VisionState) -> Dict[str, Any]:
         if score >= CLIP_THRESHOLD
     ]
 
-    log.info("[FILTER] kept %d/%d", len(final), len(boxes))
     return {"final": final}
 
 
+def draw_results_on_image(image_path: str, final_detections: List[Dict[str, Any]]) -> str:
+    """
+    Draws bounding boxes and labels on the image using distinct random colors per class.
+    Returns base64 encoded string of the annotated image.
+    """
+    img = cv2.imread(image_path)
+    h, w = img.shape[:2]
+
+    # Generate a unique random color for each distinct class label
+    unique_labels = list(set([d["label"] for d in final_detections]))
+    color_map = {}
+    for label in unique_labels:
+        # BGR format for OpenCV
+        color_map[label] = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+
+    for det in final_detections:
+        label = det["label"]
+        score = det["score"]
+        box = det["box"] # [cx, cy, norm_w, norm_h]
+        color = color_map[label]
+
+        # Convert normalized center coords to absolute pixel corners
+        cx, cy, bw, bh = box[0], box[1], box[2], box[3]
+        x1 = int((cx - bw / 2) * w)
+        y1 = int((cy - bh / 2) * h)
+        x2 = int((cx + bw / 2) * w)
+        y2 = int((cy + bh / 2) * h)
+
+        # Draw bounding box
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
+
+        # Draw text background and text
+        text = f"{label} {score:.2f}"
+        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(img, (x1, y1 - text_height - 10), (x1 + text_width, y1), color, -1)
+        cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+    # Encode to base64 to send back to LangGraph UI
+    _, buffer = cv2.imencode('.jpg', img)
+    b64_str = base64.b64encode(buffer).decode('utf-8')
+    return f"data:image/jpeg;base64,{b64_str}"
+
+
 def format_response(state: VisionState) -> Dict[str, Any]:
-    """Formats the vision pipeline results into an AI message."""
+    """Formats the vision pipeline results into an AI message, including the annotated image."""
     error = state.get("error")
     if error:
         return {"messages": [AIMessage(content=f"Pipeline stopped: {error}")]}
@@ -218,8 +231,23 @@ def format_response(state: VisionState) -> Dict[str, Any]:
     if not final:
         return {"messages": [AIMessage(content="No objects found matching the prompt.")]}
         
-    response = f"Found {len(final)} objects:\n"
+    text_response = f"Found {len(final)} objects:\n"
     for i, obj in enumerate(final):
-        response += f"- **{obj['label']}** (confidence: {obj['score']})\n"
+        text_response += f"- **{obj['label']}** (confidence: {obj['score']})\n"
         
-    return {"messages": [AIMessage(content=response)]}
+    # Generate the annotated image
+    try:
+        image_path = state.get("image_path")
+        b64_image = draw_results_on_image(image_path, final)
+        
+        # LangGraph UI can render multimodal AI messages
+        ai_message = AIMessage(
+            content=[
+                {"type": "text", "text": text_response},
+                {"type": "image_url", "image_url": {"url": b64_image}}
+            ]
+        )
+        return {"messages": [ai_message]}
+    except Exception as e:
+        log.error("Failed to draw bounding boxes: %s", e)
+        return {"messages": [AIMessage(content=text_response + f"\n\n*(Failed to generate output image: {e})*")]}
