@@ -1,7 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "vision_pipeline": "./pipeline/graph.py:pipeline"
+    "vision_pipeline": "./pipeline/graph.py:graph"
   },
   "env": ".env"
 }
