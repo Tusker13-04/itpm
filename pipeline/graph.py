@@ -12,11 +12,11 @@ from pipeline.nodes import (
 
 
 def should_continue_to_sam(state):
-    """Router: if boxes are empty or error, skip to response."""
+    """Router: if boxes are empty or error, skip to YOLO."""
     error = state.get("error")
     boxes = state.get("boxes", [])
     if error or not boxes:
-        return "format_response"
+        return "yolo_compare"
     return "sam2"
 
 
@@ -35,28 +35,22 @@ def build_graph():
     # Set entry point
     workflow.set_entry_point("process_message")
     
-    # Connect process_message -> gdino
+    # GDINO Pipeline
     workflow.add_edge("process_message", "gdino")
-    
-    # Conditional routing from gdino: either to sam2 or format_response
     workflow.add_conditional_edges(
         "gdino",
         should_continue_to_sam,
         {
             "sam2": "sam2",
-            "format_response": "format_response"
+            "yolo_compare": "yolo_compare"
         }
     )
-    
-    # Connect sam2 -> clip -> filter -> format_response
     workflow.add_edge("sam2", "clip")
     workflow.add_edge("clip", "filter")
     workflow.add_edge("filter", "format_response")
-    
-    # After the main pipeline finishes, run YOLO comparison
     workflow.add_edge("format_response", "yolo_compare")
     
-    # End after YOLO comparison
+    # YOLO runs after GDINO (sequential but independent)
     workflow.add_edge("yolo_compare", END)
 
     return workflow.compile()
