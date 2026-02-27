@@ -14,10 +14,13 @@ supervision
 requests
 grandalf
 
+# YOLOv26/YOLO11 for comparison
+ultralytics
+
 # NOTE: Install PyTorch from your local wheel (your environment):
 #   pip install C:\Users\ragha\Downloads\torch-2.10.0+cu126-cp311-cp311-win_amd64.whl
 # And install matching torchvision/torchaudio wheels as needed.
 
 # Vision models
-git+https://github.com/IDEA-Research/GroundingDINO.git
+groundingdino-py
 git+https://github.com/facebookresearch/sam2.git#egg=SAM-2

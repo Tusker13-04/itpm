@@ -7,6 +7,7 @@ import tempfile
 import uuid
 import cv2
 import numpy as np
+import time
 from typing import Dict, Any
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -31,7 +32,6 @@ def process_message(state: VisionState) -> Dict[str, Any]:
     if isinstance(last_message, HumanMessage):
         content = last_message.content
 
-        # Multimodal inputs from LangGraph Studio UI are represented as lists
         if isinstance(content, list):
             text_parts = []
             for block in content:
@@ -92,21 +92,24 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
         return {"error": "Please provide a text prompt to search for.", "boxes": []}
 
     try:
+        start_time = time.time()
         result = run_grounding_dino.invoke(
             {
                 "image_path": image_path,
                 "prompt": prompt,
             }
         )
+        gdino_time = time.time() - start_time
 
         if not result["boxes"]:
-            return {"boxes": [], "phrases": [], "logits": [], "error": "no_detections"}
+            return {"boxes": [], "phrases": [], "logits": [], "error": "no_detections", "gdino_time": gdino_time}
 
         return {
             "boxes": result["boxes"],
             "phrases": result["phrases"],
             "logits": result["logits"],
             "error": None,
+            "gdino_time": gdino_time,
         }
     except Exception as e:
         return {"error": str(e), "boxes": []}
@@ -115,13 +118,15 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
 def node_sam2(state: VisionState) -> Dict[str, Any]:
     """Node wrapper around the SAM2 segmentation tool."""
     try:
+        start_time = time.time()
         result = run_sam2.invoke(
             {
                 "image_path": state["image_path"],
                 "boxes": state["boxes"],
             }
         )
-        return {"masks": result["masks"]}
+        sam2_time = time.time() - start_time
+        return {"masks": result["masks"], "sam2_time": sam2_time}
     except Exception as e:
         return {"error": str(e), "masks": []}
 
@@ -129,6 +134,7 @@ def node_sam2(state: VisionState) -> Dict[str, Any]:
 def node_clip(state: VisionState) -> Dict[str, Any]:
     """Node wrapper around CLIP re-ranking."""
     try:
+        start_time = time.time()
         result = run_clip_rerank.invoke(
             {
                 "image_path": state["image_path"],
@@ -136,7 +142,8 @@ def node_clip(state: VisionState) -> Dict[str, Any]:
                 "phrases": state["phrases"],
             }
         )
-        return {"clip_scores": result["clip_scores"]}
+        clip_time = time.time() - start_time
+        return {"clip_scores": result["clip_scores"], "clip_time": clip_time}
     except Exception as e:
         return {"error": str(e), "clip_scores": []}
 
@@ -174,19 +181,15 @@ def format_response(state: VisionState) -> Dict[str, Any]:
     if not image_path or not os.path.exists(image_path):
         return {"messages": [AIMessage(content="Results found, but original image path is missing for visualization.")]}
 
-    # 1. Load image with OpenCV to draw boxes
     img = cv2.imread(image_path)
     h, w, _ = img.shape
 
-    # Unique colors for different classes
     unique_labels = list(set([obj['label'] for obj in final]))
-    np.random.seed(42)  # For consistent colors
+    np.random.seed(42)
     colors = {label: [int(c) for c in np.random.randint(0, 255, 3)] for label in unique_labels}
 
-    # 2. Draw each bounding box and label
     for obj in final:
         cx, cy, bw, bh = obj["box"]
-        # Convert normalized cx,cy,w,h back to absolute x1,y1,x2,y2
         x1 = int((cx - bw / 2) * w)
         y1 = int((cy - bh / 2) * h)
         x2 = int((cx + bw / 2) * w)
@@ -194,31 +197,38 @@ def format_response(state: VisionState) -> Dict[str, Any]:
         
         color = colors[obj["label"]]
         thickness = max(2, int(min(h, w) * 0.005))
-        
-        # Draw Rectangle
         cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
         
-        # Draw Label Text
         text = f"{obj['label']} {obj['score']:.2f}"
         font_scale = max(0.5, min(h, w) * 0.001)
         font_thick = max(1, int(thickness / 2))
-        
-        # Background for text so it's readable
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
         cv2.rectangle(img, (x1, y1 - th - 5), (x1 + tw, y1), color, -1)
         cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thick)
 
-    # 3. Encode image back to base64 for LangGraph Studio Chat
+    # Save image with inference time written on it
+    gdino_time = state.get("gdino_time", 0)
+    sam2_time = state.get("sam2_time", 0)
+    clip_time = state.get("clip_time", 0)
+    total_time = gdino_time + sam2_time + clip_time
+    
+    time_text = f"GDINO+SAM2+CLIP: {total_time:.3f}s"
+    cv2.putText(img, time_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    
+    output_path = os.path.join(tempfile.gettempdir(), f"gdino_result_{uuid.uuid4().hex[:8]}.jpg")
+    cv2.imwrite(output_path, img)
+    log.info(f"[GDINO Pipeline] Saved result to {output_path}")
+
     _, buffer = cv2.imencode('.jpg', img)
     img_b64 = base64.b64encode(buffer).decode('utf-8')
     img_url = f"data:image/jpeg;base64,{img_b64}"
 
-    # 4. Construct response text
-    text_response = f"Found {len(final)} objects:\n"
+    text_response = f"**Grounding DINO + SAM2 + CLIP Pipeline**\n\n"
+    text_response += f"Total inference time: **{total_time:.3f}s**\n\n"
+    text_response += f"Found {len(final)} objects:\n"
     for i, obj in enumerate(final):
         text_response += f"- **{obj['label']}** (confidence: {obj['score']})\n"
 
-    # 5. Return Multimodal Message
     message = AIMessage(
         content=[
             {"type": "text", "text": text_response},
@@ -227,3 +237,78 @@ def format_response(state: VisionState) -> Dict[str, Any]:
     )
 
     return {"messages": [message]}
+
+
+def node_yolo_compare(state: VisionState) -> Dict[str, Any]:
+    """Runs YOLOv26 inference on the same image for comparison."""
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        log.error("[YOLO] ultralytics not installed. Install via: pip install ultralytics")
+        return {"messages": [AIMessage(content="YOLOv26 comparison skipped (ultralytics not installed).")]}
+
+    image_path = state.get("image_path")
+    if not image_path or not os.path.exists(image_path):
+        return {"messages": [AIMessage(content="YOLOv26 comparison skipped (image path missing).")]}
+
+    try:
+        # Load YOLOv26 model (change to yolo26n.pt, yolo26s.pt, etc. as per your needs)
+        model = YOLO("yolo11n.pt")  # Using YOLO11 as YOLOv26 might not be released yet
+        
+        start_time = time.time()
+        results = model(image_path, verbose=False)
+        yolo_time = time.time() - start_time
+        
+        # Draw results on image
+        img = cv2.imread(image_path)
+        h, w, _ = img.shape
+        
+        detections = results[0].boxes
+        num_detections = len(detections)
+        
+        np.random.seed(123)
+        for box in detections:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+            conf = float(box.conf[0])
+            cls = int(box.cls[0])
+            label = model.names[cls]
+            
+            color = [int(c) for c in np.random.randint(0, 255, 3)]
+            thickness = max(2, int(min(h, w) * 0.005))
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+            
+            text = f"{label} {conf:.2f}"
+            font_scale = max(0.5, min(h, w) * 0.001)
+            font_thick = max(1, int(thickness / 2))
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            cv2.rectangle(img, (x1, y1 - th - 5), (x1 + tw, y1), color, -1)
+            cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thick)
+        
+        # Write inference time on image
+        time_text = f"YOLO11: {yolo_time:.3f}s"
+        cv2.putText(img, time_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        
+        output_path = os.path.join(tempfile.gettempdir(), f"yolo_result_{uuid.uuid4().hex[:8]}.jpg")
+        cv2.imwrite(output_path, img)
+        log.info(f"[YOLO] Saved result to {output_path}")
+        
+        _, buffer = cv2.imencode('.jpg', img)
+        img_b64 = base64.b64encode(buffer).decode('utf-8')
+        img_url = f"data:image/jpeg;base64,{img_b64}"
+        
+        text_response = f"\n\n**YOLO11 Comparison**\n\n"
+        text_response += f"Total inference time: **{yolo_time:.3f}s**\n\n"
+        text_response += f"Detected {num_detections} objects using COCO classes.\n"
+        
+        message = AIMessage(
+            content=[
+                {"type": "text", "text": text_response},
+                {"type": "image_url", "image_url": {"url": img_url}}
+            ]
+        )
+        
+        return {"messages": [message]}
+        
+    except Exception as e:
+        log.error(f"[YOLO] Error during inference: {e}")
+        return {"messages": [AIMessage(content=f"YOLOv26 comparison failed: {str(e)}")]}

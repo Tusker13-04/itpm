@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Annotated
-from typing_extensions import TypedDict
+from typing import Annotated, TypedDict, List, Any
 from langgraph.graph.message import add_messages
-from langchain_core.messages import BaseMessage
 
-class VisionState(TypedDict, total=False):
-    messages: Annotated[List[BaseMessage], add_messages]
-    # Keep image_path but note it can be provided via state or parsed from chat
-    image_path: Optional[str]
-    prompt: Optional[str]
-    boxes: Optional[List[List[float]]]
-    phrases: Optional[List[str]]
-    logits: Optional[List[float]]
-    masks: Optional[List[Any]]
-    clip_scores: Optional[List[float]]
-    final: Optional[List[Dict[str, Any]]]
-    error: Optional[str]
+
+class VisionState(TypedDict):
+    messages: Annotated[list, add_messages]
+    image_path: str
+    prompt: str
+    boxes: List[List[float]]
+    phrases: List[str]
+    logits: List[float]
+    masks: List[Any]
+    clip_scores: List[float]
+    final: List[dict]
+    error: str
+    gdino_time: float
+    sam2_time: float
+    clip_time: float
