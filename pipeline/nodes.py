@@ -5,12 +5,9 @@ import base64
 import os
 import tempfile
 import uuid
-import json
-import random
-from typing import Dict, Any
-
 import cv2
 import numpy as np
+from typing import Dict, Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -39,11 +36,8 @@ def process_message(state: VisionState) -> Dict[str, Any]:
             text_parts = []
             for block in content:
                 if isinstance(block, dict):
-                    # Text blocks
                     if block.get("type") == "text":
                         text_parts.append(block["text"])
-                    
-                    # LangGraph Studio UI raw image block format
                     elif block.get("type") == "image":
                         b64_data = block.get("data", "")
                         if b64_data:
@@ -54,9 +48,7 @@ def process_message(state: VisionState) -> Dict[str, Any]:
                                     f.write(base64.b64decode(b64_data))
                                 result_state["image_path"] = temp_path
                             except Exception as e:
-                                log.error("Failed to decode image from UI: %s", e)
-
-                    # Standard LangChain image URL block
+                                log.error("Failed to decode image from UI (type: image): %s", e)
                     elif block.get("type") == "image_url":
                         image_data = block.get("image_url", {})
                         image_url = image_data if isinstance(image_data, str) else image_data.get("url", "")
@@ -70,16 +62,13 @@ def process_message(state: VisionState) -> Dict[str, Any]:
                                     f.write(base64.b64decode(b64_data))
                                 result_state["image_path"] = temp_path
                             except Exception as e:
-                                log.error("Failed to decode image_url from UI: %s", e)
-                                
+                                log.error("Failed to decode image from UI (type: image_url): %s", e)
                 elif isinstance(block, str):
                     text_parts.append(block)
-                    
             content_str = " ".join(text_parts).strip()
         else:
             content_str = str(content)
             
-        # Fallback manual path parsing if user typed [path] instead of uploading
         if content_str.startswith("[") and "]" in content_str:
             path_end = content_str.find("]")
             img_path = content_str[1:path_end].strip()
@@ -120,7 +109,6 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
             "error": None,
         }
     except Exception as e:
-        log.error("[GDINO] %s", e)
         return {"error": str(e), "boxes": []}
 
 
@@ -135,7 +123,6 @@ def node_sam2(state: VisionState) -> Dict[str, Any]:
         )
         return {"masks": result["masks"]}
     except Exception as e:
-        log.error("[SAM2] %s", e)
         return {"error": str(e), "masks": []}
 
 
@@ -151,78 +138,30 @@ def node_clip(state: VisionState) -> Dict[str, Any]:
         )
         return {"clip_scores": result["clip_scores"]}
     except Exception as e:
-        log.error("[CLIP] %s", e)
         return {"error": str(e), "clip_scores": []}
 
 
 def node_filter(state: VisionState) -> Dict[str, Any]:
-    """
-    Filters detections using CLIP scores and packs final results.
-    """
+    """Filters detections using CLIP scores and packs final results."""
     boxes = state.get("boxes") or []
     phrases = state.get("phrases") or []
     masks = state.get("masks") or []
     clip_scores = state.get("clip_scores") or []
 
-    final = [
-        {
-            "label": phrase,
-            "box": box, # Note: These are [cx, cy, w, h] normalized
-            "mask": mask,
-            "score": round(float(score), 4),
-        }
-        for box, phrase, mask, score in zip(boxes, phrases, masks, clip_scores)
-        if score >= CLIP_THRESHOLD
-    ]
-
+    final = []
+    for box, phrase, mask, score in zip(boxes, phrases, masks, clip_scores):
+        if score >= CLIP_THRESHOLD:
+            final.append({
+                "label": phrase,
+                "box": box,
+                "mask": mask,
+                "score": round(float(score), 4),
+            })
     return {"final": final}
 
 
-def draw_results_on_image(image_path: str, final_detections: List[Dict[str, Any]]) -> str:
-    """
-    Draws bounding boxes and labels on the image using distinct random colors per class.
-    Returns base64 encoded string of the annotated image.
-    """
-    img = cv2.imread(image_path)
-    h, w = img.shape[:2]
-
-    # Generate a unique random color for each distinct class label
-    unique_labels = list(set([d["label"] for d in final_detections]))
-    color_map = {}
-    for label in unique_labels:
-        # BGR format for OpenCV
-        color_map[label] = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
-
-    for det in final_detections:
-        label = det["label"]
-        score = det["score"]
-        box = det["box"] # [cx, cy, norm_w, norm_h]
-        color = color_map[label]
-
-        # Convert normalized center coords to absolute pixel corners
-        cx, cy, bw, bh = box[0], box[1], box[2], box[3]
-        x1 = int((cx - bw / 2) * w)
-        y1 = int((cy - bh / 2) * h)
-        x2 = int((cx + bw / 2) * w)
-        y2 = int((cy + bh / 2) * h)
-
-        # Draw bounding box
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
-
-        # Draw text background and text
-        text = f"{label} {score:.2f}"
-        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-        cv2.rectangle(img, (x1, y1 - text_height - 10), (x1 + text_width, y1), color, -1)
-        cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-
-    # Encode to base64 to send back to LangGraph UI
-    _, buffer = cv2.imencode('.jpg', img)
-    b64_str = base64.b64encode(buffer).decode('utf-8')
-    return f"data:image/jpeg;base64,{b64_str}"
-
-
 def format_response(state: VisionState) -> Dict[str, Any]:
-    """Formats the vision pipeline results into an AI message, including the annotated image."""
+    """Formats results, draws bounding boxes on the image, and returns a multimodal AIMessage."""
     error = state.get("error")
     if error:
         return {"messages": [AIMessage(content=f"Pipeline stopped: {error}")]}
@@ -231,23 +170,60 @@ def format_response(state: VisionState) -> Dict[str, Any]:
     if not final:
         return {"messages": [AIMessage(content="No objects found matching the prompt.")]}
         
+    image_path = state.get("image_path")
+    if not image_path or not os.path.exists(image_path):
+        return {"messages": [AIMessage(content="Results found, but original image path is missing for visualization.")]}
+
+    # 1. Load image with OpenCV to draw boxes
+    img = cv2.imread(image_path)
+    h, w, _ = img.shape
+
+    # Unique colors for different classes
+    unique_labels = list(set([obj['label'] for obj in final]))
+    np.random.seed(42)  # For consistent colors
+    colors = {label: [int(c) for c in np.random.randint(0, 255, 3)] for label in unique_labels}
+
+    # 2. Draw each bounding box and label
+    for obj in final:
+        cx, cy, bw, bh = obj["box"]
+        # Convert normalized cx,cy,w,h back to absolute x1,y1,x2,y2
+        x1 = int((cx - bw / 2) * w)
+        y1 = int((cy - bh / 2) * h)
+        x2 = int((cx + bw / 2) * w)
+        y2 = int((cy + bh / 2) * h)
+        
+        color = colors[obj["label"]]
+        thickness = max(2, int(min(h, w) * 0.005))
+        
+        # Draw Rectangle
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+        
+        # Draw Label Text
+        text = f"{obj['label']} {obj['score']:.2f}"
+        font_scale = max(0.5, min(h, w) * 0.001)
+        font_thick = max(1, int(thickness / 2))
+        
+        # Background for text so it's readable
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+        cv2.rectangle(img, (x1, y1 - th - 5), (x1 + tw, y1), color, -1)
+        cv2.putText(img, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thick)
+
+    # 3. Encode image back to base64 for LangGraph Studio Chat
+    _, buffer = cv2.imencode('.jpg', img)
+    img_b64 = base64.b64encode(buffer).decode('utf-8')
+    img_url = f"data:image/jpeg;base64,{img_b64}"
+
+    # 4. Construct response text
     text_response = f"Found {len(final)} objects:\n"
     for i, obj in enumerate(final):
         text_response += f"- **{obj['label']}** (confidence: {obj['score']})\n"
-        
-    # Generate the annotated image
-    try:
-        image_path = state.get("image_path")
-        b64_image = draw_results_on_image(image_path, final)
-        
-        # LangGraph UI can render multimodal AI messages
-        ai_message = AIMessage(
-            content=[
-                {"type": "text", "text": text_response},
-                {"type": "image_url", "image_url": {"url": b64_image}}
-            ]
-        )
-        return {"messages": [ai_message]}
-    except Exception as e:
-        log.error("Failed to draw bounding boxes: %s", e)
-        return {"messages": [AIMessage(content=text_response + f"\n\n*(Failed to generate output image: {e})*")]}
+
+    # 5. Return Multimodal Message
+    message = AIMessage(
+        content=[
+            {"type": "text", "text": text_response},
+            {"type": "image_url", "image_url": {"url": img_url}}
+        ]
+    )
+
+    return {"messages": [message]}
