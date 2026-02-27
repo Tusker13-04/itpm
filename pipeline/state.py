@@ -18,3 +18,7 @@ class VisionState(TypedDict):
     gdino_time: float
     sam2_time: float
     clip_time: float
+    gdino_result_msg: str
+    gdino_result_img: str
+    yolo_result_msg: str
+    yolo_result_img: str
