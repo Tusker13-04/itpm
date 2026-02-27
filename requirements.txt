@@ -1,0 +1,27 @@
+langchain
+langchain-core
+langgraph
+
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+
+transformers
+pillow
+numpy
+opencv-python
+supervision
+requests
+grandalf
+
+# NOTE: Install PyTorch from your local wheel (your environment):
+#   pip install C:\Users\ragha\Downloads\torch-2.10.0+cu126-cp311-cp311-win_amd64.whl
+# And install matching torchvision/torchaudio wheels as needed.
+
+# Vision models
+# NOTE: SAM2's package name is "SAM-2" (not "sam2"), and pip can error if the
+# requirement name doesn't match its metadata. This install works on Windows:
+#   pip install "git+https://github.com/facebookresearch/sam2.git#egg=SAM-2"
+git+https://github.com/facebookresearch/sam2.git#egg=SAM-2
+
