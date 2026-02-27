@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import base64
+import os
+import tempfile
 from typing import Dict, Any
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -14,40 +17,63 @@ CLIP_THRESHOLD = 0.20
 
 
 def process_message(state: VisionState) -> Dict[str, Any]:
-    """Extracts prompt and optionally image path from the last user message."""
+    """Extracts prompt and image from the last user message."""
     messages = state.get("messages", [])
     if not messages:
         return {}
     
     last_message = messages[-1]
+    result_state = {}
+    
     if isinstance(last_message, HumanMessage):
         content = last_message.content
         
-        # Handle cases where the UI passes content as a list (e.g. multimodal inputs)
+        # Handle multimodal inputs from LangGraph Studio UI (lists)
         if isinstance(content, list):
-            # Try to extract text from the list of content blocks
             text_parts = []
             for block in content:
-                if isinstance(block, dict) and "text" in block:
+                # 1. Extract Text
+                if block.get("type") == "text":
                     text_parts.append(block["text"])
-                elif isinstance(block, str):
-                    text_parts.append(block)
-            content_str = " ".join(text_parts) if text_parts else str(content)
+                    
+                # 2. Extract Image uploaded directly via UI
+                elif block.get("type") == "image_url":
+                    # The image_url format looks like: "data:image/jpeg;base64,/9j/4AAQSkZ..."
+                    image_url = block.get("image_url", {}).get("url", "")
+                    if image_url.startswith("data:image"):
+                        try:
+                            # Parse out the base64 string
+                            header, b64_data = image_url.split(",", 1)
+                            # Create a temporary file to store the image
+                            # GroundingDino needs a file path
+                            temp_dir = tempfile.gettempdir()
+                            temp_path = os.path.join(temp_dir, "lg_studio_upload.jpg")
+                            
+                            with open(temp_path, "wb") as f:
+                                f.write(base64.b64decode(b64_data))
+                                
+                            result_state["image_path"] = temp_path
+                            log.info("[CHAT] Saved uploaded image to %s", temp_path)
+                        except Exception as e:
+                            log.error("Failed to decode image from UI: %s", e)
+                            
+            content_str = " ".join(text_parts).strip()
         else:
             content_str = str(content)
             
         log.info("[CHAT] Extracted string message: '%s'", content_str)
         
-        # Simple parsing logic to allow users to provide path in chat
-        # Example format: "[C:/path/to/image.jpg] person . car"
+        # Fallback manual path parsing if user typed [path] instead of uploading
         if content_str.startswith("[") and "]" in content_str:
             path_end = content_str.find("]")
             img_path = content_str[1:path_end].strip()
             prompt_text = content_str[path_end+1:].strip()
-            return {"image_path": img_path, "prompt": prompt_text}
+            result_state["image_path"] = img_path
+            result_state["prompt"] = prompt_text
+        elif content_str:
+            result_state["prompt"] = content_str
             
-        return {"prompt": content_str}
-    return {}
+    return result_state
 
 
 def node_gdino(state: VisionState) -> Dict[str, Any]:
@@ -58,9 +84,9 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
     log.info("[GDINO] image_path='%s', prompt='%s'", image_path, prompt)
     
     if not image_path:
-        return {"error": "Please provide an 'image_path'. You can format your chat message like this: [C:/path/to/image.jpg] person . car", "boxes": []}
+        return {"error": "Please provide an image. You can click the '+' icon in the chat to upload one.", "boxes": []}
     if not prompt:
-        return {"error": "Please provide a prompt via chat message.", "boxes": []}
+        return {"error": "Please provide a text prompt to search for.", "boxes": []}
 
     try:
         result = run_grounding_dino.invoke(
@@ -169,7 +195,7 @@ def format_response(state: VisionState) -> Dict[str, Any]:
     if not final:
         return {"messages": [AIMessage(content="No objects found matching the prompt.")]}
         
-    response = f"Found {len(final)} objects in `{state.get('image_path')}`:\n"
+    response = f"Found {len(final)} objects:\n"
     for i, obj in enumerate(final):
         response += f"- **{obj['label']}** (confidence: {obj['score']})\n"
         
