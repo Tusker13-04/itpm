@@ -31,7 +31,7 @@ def run_grounding_dino(
 
     Returns:
         Dict with keys:
-            - boxes   : list of normalized [x1,y1,x2,y2]
+            - boxes   : list of normalized [cx, cy, w, h] (GroundingDINO default)
             - phrases : list of detected text phrases
             - logits  : list of confidence scores
     """
@@ -60,7 +60,7 @@ def run_sam2(image_path: str, boxes: List[List[float]]) -> Dict[str, Any]:
 
     Args:
         image_path: Path to input image.
-        boxes: List of normalized [x1,y1,x2,y2] boxes.
+        boxes: List of normalized [cx, cy, w, h] boxes from GroundingDINO.
 
     Returns:
         Dict with keys:
@@ -72,8 +72,15 @@ def run_sam2(image_path: str, boxes: List[List[float]]) -> Dict[str, Any]:
     img = np.array(Image.open(image_path).convert("RGB"))
     h, w = img.shape[:2]
 
-    # Convert to absolute coordinates
-    abs_boxes = [[b[0] * w, b[1] * h, b[2] * w, b[3] * h] for b in boxes]
+    # Convert normalized [cx, cy, w, h] to absolute [x1, y1, x2, y2]
+    abs_boxes = []
+    for b in boxes:
+        cx, cy, bw, bh = b[0], b[1], b[2], b[3]
+        x1 = (cx - bw / 2) * w
+        y1 = (cy - bh / 2) * h
+        x2 = (cx + bw / 2) * w
+        y2 = (cy + bh / 2) * h
+        abs_boxes.append([x1, y1, x2, y2])
 
     predictor.set_image(img)
     masks, scores, _ = predictor.predict(
@@ -107,12 +114,21 @@ def run_clip_rerank(
     scores: List[float] = []
 
     for box, phrase in zip(boxes, phrases):
-        x1, y1, x2, y2 = (
-            int(box[0] * w),
-            int(box[1] * h),
-            int(box[2] * w),
-            int(box[3] * h),
-        )
+        # Grounding DINO outputs normalized [center_x, center_y, width, height]
+        cx, cy, bw, bh = box[0], box[1], box[2], box[3]
+        
+        # Convert to absolute [x1, y1, x2, y2]
+        x1 = int((cx - bw / 2) * w)
+        y1 = int((cy - bh / 2) * h)
+        x2 = int((cx + bw / 2) * w)
+        y2 = int((cy + bh / 2) * h)
+
+        # Ensure valid crop boundaries for PIL (x1 < x2 and y1 < y2)
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(x1 + 1, min(x2, w))
+        y2 = max(y1 + 1, min(y2, h))
+
         crop = img.crop((x1, y1, x2, y2))
 
         inputs = processor(
@@ -129,4 +145,3 @@ def run_clip_rerank(
         scores.append(float(s))
 
     return {"clip_scores": scores}
-
