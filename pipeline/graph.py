@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
-from pipeline.nodes import node_clip, node_filter, node_gdino, node_sam2
+from pipeline.nodes import node_clip, node_filter, node_gdino, node_sam2, process_message, format_response
 from pipeline.state import VisionState
 
 
@@ -25,28 +25,31 @@ def build_pipeline():
     """
     graph = StateGraph(VisionState)
 
+    graph.add_node("process_message", process_message)
     graph.add_node("gdino", node_gdino)
     graph.add_node("sam2", node_sam2)
     graph.add_node("clip", node_clip)
     graph.add_node("filter", node_filter)
+    graph.add_node("format_response", format_response)
 
-    graph.set_entry_point("gdino")
+    graph.add_edge(START, "process_message")
+    graph.add_edge("process_message", "gdino")
 
     graph.add_conditional_edges(
         "gdino",
         route_after_gdino,
         {
             "continue": "sam2",
-            "abort": END,
+            "abort": "format_response",
         },
     )
 
     graph.add_edge("sam2", "clip")
     graph.add_edge("clip", "filter")
-    graph.add_edge("filter", END)
+    graph.add_edge("filter", "format_response")
+    graph.add_edge("format_response", END)
 
     return graph.compile()
 
 
 pipeline = build_pipeline()
-

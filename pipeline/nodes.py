@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, Any
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 from pipeline.state import VisionState
 from pipeline.tools import run_grounding_dino, run_sam2, run_clip_rerank
 
@@ -11,15 +13,36 @@ log = logging.getLogger(__name__)
 CLIP_THRESHOLD = 0.20
 
 
+def process_message(state: VisionState) -> Dict[str, Any]:
+    """Extracts prompt from the last user message."""
+    messages = state.get("messages", [])
+    if not messages:
+        return {}
+    
+    last_message = messages[-1]
+    if isinstance(last_message, HumanMessage):
+        log.info("[CHAT] Extracted prompt from message: '%s'", last_message.content)
+        return {"prompt": last_message.content}
+    return {}
+
+
 def node_gdino(state: VisionState) -> Dict[str, Any]:
     """Node wrapper around the Grounding DINO tool."""
-    log.info("[GDINO] prompt='%s'", state["prompt"])
+    log.info("[GDINO] prompt='%s'", state.get("prompt"))
+
+    image_path = state.get("image_path")
+    prompt = state.get("prompt")
+    
+    if not image_path:
+        return {"error": "Please provide an 'image_path' in the state configuration.", "boxes": []}
+    if not prompt:
+        return {"error": "Please provide a prompt via chat message.", "boxes": []}
 
     try:
         result = run_grounding_dino.invoke(
             {
-                "image_path": state["image_path"],
-                "prompt": state["prompt"],
+                "image_path": image_path,
+                "prompt": prompt,
             }
         )
 
@@ -40,7 +63,7 @@ def node_gdino(state: VisionState) -> Dict[str, Any]:
             "logits": result["logits"],
             "error": None,
         }
-    except Exception as e:  # pragma: no cover - defensive logging
+    except Exception as e:
         log.error("[GDINO] %s", e)
         return {"error": str(e), "boxes": []}
 
@@ -60,7 +83,7 @@ def node_sam2(state: VisionState) -> Dict[str, Any]:
 
         log.info("[SAM2] %d masks generated", len(result["masks"]))
         return {"masks": result["masks"]}
-    except Exception as e:  # pragma: no cover - defensive logging
+    except Exception as e:
         log.error("[SAM2] %s", e)
         return {"error": str(e), "masks": []}
 
@@ -81,7 +104,7 @@ def node_clip(state: VisionState) -> Dict[str, Any]:
 
         log.info("[CLIP] scores=%s", result["clip_scores"])
         return {"clip_scores": result["clip_scores"]}
-    except Exception as e:  # pragma: no cover - defensive logging
+    except Exception as e:
         log.error("[CLIP] %s", e)
         return {"error": str(e), "clip_scores": []}
 
@@ -111,3 +134,19 @@ def node_filter(state: VisionState) -> Dict[str, Any]:
     log.info("[FILTER] kept %d/%d", len(final), len(boxes))
     return {"final": final}
 
+
+def format_response(state: VisionState) -> Dict[str, Any]:
+    """Formats the vision pipeline results into an AI message."""
+    error = state.get("error")
+    if error:
+        return {"messages": [AIMessage(content=f"Pipeline stopped: {error}")]}
+    
+    final = state.get("final", [])
+    if not final:
+        return {"messages": [AIMessage(content="No objects found matching the prompt.")]}
+        
+    response = f"Found {len(final)} objects:\n"
+    for i, obj in enumerate(final):
+        response += f"- **{obj['label']}** (confidence: {obj['score']})\n"
+        
+    return {"messages": [AIMessage(content=response)]}

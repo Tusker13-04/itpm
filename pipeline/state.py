@@ -1,30 +1,18 @@
-from typing import List, Optional, TypedDict
+from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Annotated
+from typing_extensions import TypedDict
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage
 
 class VisionState(TypedDict, total=False):
-    """
-    Shared mutable state passed between LangGraph nodes.
-
-    This mirrors the spec in the project document.
-    """
-
-    image_path: str
-    prompt: str  # "person . laptop . backpack"
-
-    # Outputs from Grounding DINO
-    boxes: Optional[List]  # [[x1,y1,x2,y2], ...] normalized
-    phrases: Optional[List]  # ["person", "laptop"]
-    logits: Optional[List]  # GDINO confidence scores
-
-    # Outputs from SAM2
-    masks: Optional[List]  # binary masks from SAM2
-
-    # Outputs from CLIP re-ranking
-    clip_scores: Optional[List]  # CLIP re-rank scores per box
-
-    # Final filtered detections
-    final: Optional[List]  # [{"label","box","mask","score"}, ...]
-
-    # Error/debugging info
-    error: Optional[str]  # debug branch signal
-
+    messages: Annotated[List[BaseMessage], add_messages]
+    image_path: Optional[str]
+    prompt: Optional[str]
+    boxes: Optional[List[List[float]]]
+    phrases: Optional[List[str]]
+    logits: Optional[List[float]]
+    masks: Optional[List[Any]]
+    clip_scores: Optional[List[float]]
+    final: Optional[List[Dict[str, Any]]]
+    error: Optional[str]
